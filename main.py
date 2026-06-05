@@ -2,609 +2,1034 @@ import pygame
 import math
 import random
 import os
+import csv
+import sys
 
-# Initialize pygame
 pygame.init()
+pygame.mixer.pre_init(44100, -16, 2, 512)
 
-# Constants
+# ── Constants ─────────────────────────────────────────────────────────────────
 SCREEN_WIDTH, SCREEN_HEIGHT = 800, 600
-MAP_SIZE = 2000 # Map is MAP_SIZE x MAP_SIZE
 TILE_SIZE = 100
 FPS = 60
 
-# Colors & Biomes
-COLOR_WATER = (30, 80, 160)
-COLOR_GRASS = (50, 120, 50)
-COLOR_FOREST = (20, 80, 20)
-COLOR_ROCK = (100, 100, 110)
-COLOR_RIVER_EDGE = (100, 150, 220)
-COLOR_HOLE = (10, 10, 15) # Dark abyss
-
-# Game Colors
-BULLET_COLOR = (255, 220, 100)
-BLOOD_COLOR = (140, 20, 20)
-UI_ACCENT = (255, 100, 50)
-WHITE = (255, 255, 255)
+# Palette
+WHITE       = (255, 255, 255)
+BLACK       = (0,   0,   0)
+UI_ACCENT   = (255, 100,  50)
+BLOOD_COLOR = (180,  20,  20)
+NEON_CYAN   = (  0, 230, 255)
+NEON_ORANGE = (255, 120,  30)
+DARK_BG     = ( 10,  10,  18)
 
 screen = pygame.display.set_mode((SCREEN_WIDTH, SCREEN_HEIGHT))
-pygame.display.set_caption("GODFIRE: Forest Survival")
+pygame.display.set_caption("GODFIRE: Forest Shadows")
 clock = pygame.time.Clock()
-font_sm = pygame.font.SysFont("Arial", 18, bold=True)
-font_md = pygame.font.SysFont("Arial", 28, bold=True)
-font_lg = pygame.font.SysFont("Arial", 64, bold=True)
 
-# --- Asset Management ---
+font_sm = pygame.font.SysFont("Consolas", 17, bold=True)
+font_md = pygame.font.SysFont("Consolas", 26, bold=True)
+font_lg = pygame.font.SysFont("Consolas", 62, bold=True)
+font_xl = pygame.font.SysFont("Consolas", 80, bold=True)
 
+
+# ── Asset Manager ──────────────────────────────────────────────────────────────
 class AssetManager:
     def __init__(self):
         self.images = {}
         self.sounds = {}
+        self.current_music = None
         self.placeholder_colors = {
-            "player": (70, 90, 70),
-            "zombie": (90, 70, 70),
-            "ranged": (70, 70, 120),
-            "boss": (150, 30, 30),
-            "bullet": (255, 220, 50),
-            "resource_ammo": (50, 150, 50),
-            "resource_upgrade": (200, 200, 50),
-            "shield": (100, 200, 255, 150)
+            "player":      (  0, 200, 255),
+            "zombie":      (150,  50,  50),
+            "ranged":      ( 70,  70, 150),
+            "boss":        (255,  30,  30),
+            "bullet":      (255, 255, 100),
+            "shield":      (100, 200, 255),
+            "tile_grass":  ( 30,  60,  30),
+            "tile_rock":   ( 70,  70,  80),
+            "tile_water":  ( 30,  60, 120),
+            "tile_hole":   ( 10,  10,  20),
+            "tile_forest": ( 20,  40,  20),
         }
 
     def get_image(self, name, size=(80, 80)):
-        if name not in self.images:
-            path = os.path.join("assets/images", f"{name}.png")
+        key = (name, size)
+        if key not in self.images:
+            # map asset name aliases
+            disk_name = name
+            if name == "tile_grass":   disk_name = "tile_battle_ground"
+            path = os.path.join("assets/images", f"{disk_name}.png")
             if os.path.exists(path):
                 try:
                     img = pygame.image.load(path).convert_alpha()
-                    self.images[name] = pygame.transform.scale(img, size)
+                    self.images[key] = pygame.transform.scale(img, size)
+                    return self.images[key]
                 except:
-                    self.images[name] = self._create_placeholder(name, size)
-            else:
-                self.images[name] = self._create_placeholder(name, size)
-        return self.images[name]
+                    pass
+            self.images[key] = self._make_placeholder(name, size)
+        return self.images[key]
 
-    def _create_placeholder(self, name, size):
+    def _make_placeholder(self, name, size):
         surf = pygame.Surface(size, pygame.SRCALPHA)
         color = self.placeholder_colors.get(name, (200, 200, 200))
-        if len(color) == 4: # RGBA
-            pygame.draw.circle(surf, color, (size[0]//2, size[1]//2), size[0]//2)
+        if name.startswith("tile_"):
+            surf.fill(color)
+            for _ in range(8):
+                rx, ry = random.randint(0, size[0]), random.randint(0, size[1])
+                pygame.draw.circle(surf,
+                    (max(0, color[0]-15), max(0, color[1]-15), max(0, color[2]-15)),
+                    (rx, ry), 3)
         else:
-            pygame.draw.circle(surf, color, (size[0]//2, size[1]//2), size[0]//2)
-            pygame.draw.circle(surf, (30, 30, 30), (size[0]//2, size[1]//2), size[0]//4) # "Head"
+            cx, cy = size[0]//2, size[1]//2
+            r = min(size)//2 - 2
+            pygame.draw.circle(surf, color, (cx, cy), r)
+            pygame.draw.circle(surf, (30, 30, 30), (cx, cy), r//3)
         return surf
 
-    def play_sound(self, name):
+    def play_sound(self, name, volume=1.0):
         if name not in self.sounds:
-            path = os.path.join("assets/sounds", f"{name}.wav")
-            if os.path.exists(path):
-                try:
-                    self.sounds[name] = pygame.mixer.Sound(path)
-                except:
-                    self.sounds[name] = None
+            for attempt in [name, "sheild" if name == "shield" else name]:
+                p = os.path.join("assets/sounds", f"{attempt}.wav")
+                if os.path.exists(p):
+                    try:
+                        self.sounds[name] = pygame.mixer.Sound(p)
+                        break
+                    except:
+                        pass
             else:
                 self.sounds[name] = None
-        
-        if self.sounds[name]:
+        if self.sounds.get(name):
+            self.sounds[name].set_volume(volume)
             self.sounds[name].play()
+
+    def play_music(self, name, volume=0.55):
+        name = name.replace(".mp3", "")
+        if self.current_music == name:
+            return
+        candidates = [
+            os.path.join("assets/music", f"{name}.mp3"),
+            os.path.join("assets/music", f"{name}_song.mp3"),
+        ]
+        for p in candidates:
+            if os.path.exists(p):
+                try:
+                    pygame.mixer.music.load(p)
+                    pygame.mixer.music.set_volume(volume)
+                    pygame.mixer.music.play(-1)
+                    self.current_music = name
+                    return
+                except:
+                    pass
+
+    def stop_music(self, fade_ms=800):
+        pygame.mixer.music.fadeout(fade_ms)
+        self.current_music = None
+
 
 assets = AssetManager()
 
-# --- Procedural Map Generation ---
 
-class TerrainGenerator:
-    def __init__(self, size):
-        self.size = size
-        self.grid_size = size // TILE_SIZE
-        self.noise_grid = []
-        self.seed_x = random.uniform(0, 1000)
-        self.seed_y = random.uniform(0, 1000)
-        self.generate()
+# ── Room ───────────────────────────────────────────────────────────────────────
+class Room:
+    TILE_NAMES = ["GRASS", "ROCK", "WATER", "HOLE", "FOREST"]
+    IMG_NAMES  = ["tile_grass", "tile_rock", "tile_water", "tile_hole", "tile_forest"]
 
-    def _noise(self, x, y):
-        # Simulated organic noise using layered sine waves
-        val = math.sin(x * 0.1 + self.seed_x) * math.cos(y * 0.1 + self.seed_y)
-        val += 0.5 * math.sin(x * 0.3 + self.seed_x * 0.5) * math.cos(y * 0.3 + self.seed_y * 0.5)
-        val += 0.25 * math.sin(x * 0.7) * math.sin(y * 0.7)
-        return (val + 1.75) / 3.5 # Normalize to 0-1 range roughly
+    def __init__(self, x, y):
+        self.x, self.y = x, y
+        self._load_map()
 
-    def generate(self):
-        self.noise_grid = []
-        for y in range(self.grid_size):
-            row = []
-            for x in range(self.grid_size):
-                row.append(self._noise(x, y))
-            self.noise_grid.append(row)
+    def _load_map(self):
+        path = os.path.join("assets/maps", f"{self.x}_{self.y}.csv")
+        if os.path.exists(path):
+            with open(path) as f:
+                self.grid = [[int(c) for c in row] for row in csv.reader(f)]
+        else:
+            # Procedurally generate a simple map
+            self.grid = self._generate()
 
-    def get_type(self, x, y):
-        gx = int(x // TILE_SIZE)
-        gy = int(y // TILE_SIZE)
-        if 0 <= gx < self.grid_size and 0 <= gy < self.grid_size:
-            n = self.noise_grid[gy][gx]
-            if n < 0.15: return "HOLE"
-            if n < 0.25: return "WATER"
-            if n < 0.30: return "RIVER_EDGE"
-            if n < 0.70: return "GRASS"
-            if n < 0.85: return "FOREST"
-            return "ROCK"
+    def _generate(self):
+        g = [[0]*8 for _ in range(6)]
+        
+        # scatter features
+        rng = random.Random((self.x * 31 + self.y * 97) & 0xFFFF)
+        for _ in range(8):
+            r, c = rng.randint(0, 5), rng.randint(0, 7)
+            # prevent blocking the very edges too much to ensure smooth transitions
+            if r in (0, 5) or c in (0, 7):
+                if rng.random() < 0.5: continue
+            g[r][c] = rng.choice([1, 2, 3, 4])
+        return g
+
+    def get_type(self, px, py):
+        gx, gy = int(px // TILE_SIZE), int(py // TILE_SIZE)
+        if 0 <= gx < 8 and 0 <= gy < 6:
+            return self.TILE_NAMES[self.grid[gy][gx]]
         return "ROCK"
 
-# --- Helper Systems ---
+    def draw(self, surface):
+        for gy, row in enumerate(self.grid):
+            for gx, val in enumerate(row):
+                img = assets.get_image(self.IMG_NAMES[val], (TILE_SIZE, TILE_SIZE))
+                surface.blit(img, (gx * TILE_SIZE, gy * TILE_SIZE))
 
-class Camera:
+
+# ── Lighting ───────────────────────────────────────────────────────────────────
+class LightingSystem:
+    DIV = 6
+
     def __init__(self):
-        self.offset = pygame.math.Vector2(0, 0)
-        self.shake_amount = 0
-        self.shake_timer = 0
-        self.shake_offset = pygame.math.Vector2(0, 0)
+        self._build_mask(400)
 
-    def shake(self, amount, duration):
-        self.shake_amount = amount
-        self.shake_timer = duration
+    def _build_mask(self, radius):
+        self.light_radius = radius
+        rad = radius // self.DIV
+        mask = pygame.Surface((rad * 2, rad * 2), pygame.SRCALPHA)
+        for r in range(rad, 0, -1):
+            t = r / rad
+            alpha = int(60 + 195 * (1 - t))
+            pygame.draw.circle(mask, (255, 255, 255, alpha), (rad, rad), r)
+        self.light_mask = mask
 
-    def update(self, target_pos, dt):
-        target_offset = target_pos - pygame.math.Vector2(SCREEN_WIDTH // 2, SCREEN_HEIGHT // 2)
-        self.offset += (target_offset - self.offset) * 0.1
-        self.offset.x = max(0, min(MAP_SIZE - SCREEN_WIDTH, self.offset.x))
-        self.offset.y = max(0, min(MAP_SIZE - SCREEN_HEIGHT, self.offset.y))
+    def render(self, surface, player_pos, extra_lights=None):
+        W, H = SCREEN_WIDTH // self.DIV, SCREEN_HEIGHT // self.DIV
+        small = pygame.Surface((W, H))
+        small.fill((30, 32, 48))
 
-        if self.shake_timer > 0:
-            self.shake_timer -= dt
-            self.shake_offset = pygame.math.Vector2(random.uniform(-self.shake_amount, self.shake_amount), random.uniform(-self.shake_amount, self.shake_amount))
-        else:
-            self.shake_offset.update(0, 0)
+        pulse = 1.0 + math.sin(pygame.time.get_ticks() * 0.004) * 0.04
+        main_mask = pygame.transform.rotozoom(self.light_mask, 0, pulse)
+        cx, cy = int(player_pos[0] // self.DIV), int(player_pos[1] // self.DIV)
+        small.blit(main_mask, main_mask.get_rect(center=(cx, cy)))
 
-    def apply(self, pos):
-        return pos - self.offset + self.shake_offset
+        if extra_lights:
+            for (lx, ly, lr, la) in extra_lights:
+                rad = lr // self.DIV
+                lsurf = pygame.Surface((rad * 2, rad * 2), pygame.SRCALPHA)
+                for r in range(rad, 0, -1):
+                    t = r / rad
+                    a = int(la * (1 - t))
+                    pygame.draw.circle(lsurf, (255, 255, 255, a), (rad, rad), r)
+                small.blit(lsurf, lsurf.get_rect(center=(lx // self.DIV, ly // self.DIV)))
+
+        big = pygame.transform.scale(small, (SCREEN_WIDTH, SCREEN_HEIGHT))
+        surface.blit(big, (0, 0), special_flags=pygame.BLEND_RGBA_MULT)
+
+
+# ── Particles ──────────────────────────────────────────────────────────────────
+class Particle:
+    __slots__ = ("pos", "vel", "color", "life", "age", "size", "gravity")
+
+    def __init__(self, pos, color, speed=3, life=1.0, size=6, gravity=0.0):
+        self.pos  = pygame.math.Vector2(pos)
+        angle     = random.uniform(0, math.tau)
+        spd       = random.uniform(speed * 0.4, speed)
+        self.vel  = pygame.math.Vector2(math.cos(angle) * spd, math.sin(angle) * spd)
+        self.color   = color
+        self.life    = life
+        self.age     = 0.0
+        self.size    = size
+        self.gravity = gravity
+
 
 class ParticleManager:
     def __init__(self):
-        self.particles = []
+        self.particles: list[Particle] = []
 
-    def emit(self, pos, color, speed_range=(2, 5), size_range=(2, 6), life_range=(0.5, 1.0), count=1):
+    def emit(self, pos, color, count=1, speed=3, life=0.7, size=6, gravity=0.0):
         for _ in range(count):
-            angle = random.uniform(0, math.pi * 2)
-            speed = random.uniform(*speed_range)
-            self.particles.append({
-                "pos": pygame.math.Vector2(pos),
-                "vel": pygame.math.Vector2(math.cos(angle), math.sin(angle)) * speed,
-                "color": color,
-                "size": random.uniform(*size_range),
-                "life": random.uniform(*life_range),
-                "total_life": 0
-            })
+            self.particles.append(Particle(pos, color, speed, life, size, gravity))
+
+    def emit_burst(self, pos, color1, color2, count=20):
+        for _ in range(count):
+            c = color1 if random.random() < 0.5 else color2
+            self.particles.append(Particle(pos, c, speed=random.uniform(2, 9),
+                                           life=random.uniform(0.4, 1.0),
+                                           size=random.randint(3, 9),
+                                           gravity=120))
 
     def update(self, dt):
-        for p in self.particles[:]:
-            p["pos"] += p["vel"]
-            p["vel"] *= 0.95
-            p["total_life"] += dt
-            if p["total_life"] >= p["life"]: self.particles.remove(p)
-
-    def draw(self, surface, camera):
+        live = []
         for p in self.particles:
-            alpha = int(255 * (1 - p["total_life"] / p["life"]))
-            draw_pos = camera.apply(p["pos"])
-            s = pygame.Surface((p["size"]*2, p["size"]*2), pygame.SRCALPHA)
-            pygame.draw.circle(s, (*p["color"][:3], alpha), (p["size"], p["size"]), p["size"])
-            surface.blit(s, (draw_pos.x - p["size"], draw_pos.y - p["size"]))
+            p.age += dt
+            if p.age < p.life:
+                p.vel.y += p.gravity * dt
+                p.pos   += p.vel * dt * 60
+                live.append(p)
+        self.particles = live
 
-class FloatingText:
-    def __init__(self, pos, text, color):
-        self.pos = pygame.math.Vector2(pos)
-        self.text = text
-        self.color = color
-        self.life = 1.0
-        self.total_life = 0
+    def draw(self, surface):
+        for p in self.particles:
+            t     = p.age / p.life
+            alpha = int(255 * (1 - t))
+            sz    = max(1, int(p.size * (1 - t * 0.5)))
+            s = pygame.Surface((sz * 2, sz * 2), pygame.SRCALPHA)
+            col   = (*p.color[:3], alpha)
+            pygame.draw.rect(s, col, (0, 0, sz * 2, sz * 2))
+            surface.blit(s, (int(p.pos.x) - sz, int(p.pos.y) - sz))
 
-    def update(self, dt):
-        self.pos.y -= 2
-        self.total_life += dt
-        return self.total_life < self.life
 
-    def draw(self, surface, camera):
-        alpha = int(255 * (1 - self.total_life / self.life))
-        txt_surf = font_sm.render(self.text, True, self.color)
-        txt_surf.set_alpha(alpha)
-        surface.blit(txt_surf, camera.apply(self.pos))
-
-# --- Entities ---
-
+# ── Bullet ─────────────────────────────────────────────────────────────────────
 class Bullet(pygame.sprite.Sprite):
-    def __init__(self, pos, angle, is_enemy=False):
+    def __init__(self, pos, angle, is_enemy=False, speed_mul=1.0, damage=5):
         super().__init__()
-        self.pos = pygame.math.Vector2(pos)
-        rad = math.radians(-angle)
-        self.vel = pygame.math.Vector2(math.cos(rad), math.sin(rad)) * 12
+        self.pos      = pygame.math.Vector2(pos)
+        rad           = math.radians(-angle)
+        spd           = (9 if is_enemy else 15) * speed_mul
+        self.vel      = pygame.math.Vector2(math.cos(rad), math.sin(rad)) * spd
         self.is_enemy = is_enemy
-        self.image = assets.get_image("bullet", (24, 24))
-        self.rect = self.image.get_rect(center=self.pos)
+        self.damage   = damage
+        self.image    = assets.get_image("bullet", (28, 28))
+        self.rect     = self.image.get_rect(center=self.pos)
+        self.trail    = []
 
-    def update(self, dt, terrain):
-        self.pos += self.vel * dt * 60
+    def update(self, dt, room):
+        self.trail.append(pygame.math.Vector2(self.pos))
+        if len(self.trail) > 5:
+            self.trail.pop(0)
+        self.pos    += self.vel * dt * 60
         self.rect.center = self.pos
-        t_type = terrain.get_type(self.pos.x, self.pos.y)
-        if t_type in ["FOREST", "ROCK"]: return "hit_solid"
-        if not (0 <= self.pos.x <= MAP_SIZE and 0 <= self.pos.y <= MAP_SIZE): return "kill"
+        t_type = room.get_type(self.pos.x, self.pos.y)
+        if t_type in ("FOREST", "ROCK"):
+            return "kill"
+        if not (0 <= self.pos.x <= SCREEN_WIDTH and 0 <= self.pos.y <= SCREEN_HEIGHT):
+            return "kill"
         return None
 
-class Resource(pygame.sprite.Sprite):
-    def __init__(self, pos, r_type):
-        super().__init__()
-        self.pos = pygame.math.Vector2(pos)
-        self.r_type = r_type # "ammo" or "upgrade"
-        self.image = assets.get_image(f"resource_{r_type}", (30, 30))
-        self.rect = self.image.get_rect(center=self.pos)
+    def draw_trail(self, surface):
+        for i, p in enumerate(self.trail):
+            alpha = int(180 * (i / len(self.trail))) if self.trail else 0
+            sz    = max(2, 5 - (len(self.trail) - i))
+            s     = pygame.Surface((sz*2, sz*2), pygame.SRCALPHA)
+            col   = (255, 220, 60, alpha) if not self.is_enemy else (255, 80, 80, alpha)
+            pygame.draw.circle(s, col, (sz, sz), sz)
+            surface.blit(s, (int(p.x) - sz, int(p.y) - sz))
 
+
+# ── Gloo Wall ──────────────────────────────────────────────────────────────────
 class GlooWall(pygame.sprite.Sprite):
     def __init__(self, pos, angle):
         super().__init__()
-        self.pos = pygame.math.Vector2(pos)
-        self.base_image = assets.get_image("shield", (120, 30))
-        self.image = pygame.transform.rotate(self.base_image, angle)
-        self.rect = self.image.get_rect(center=self.pos)
-        self.health = 100
-        self.life = 10.0 # seconds
+        self.pos    = pygame.math.Vector2(pos)
+        base        = assets.get_image("shield", (130, 40))
+        self.image  = pygame.transform.rotate(base, angle)
+        self.rect   = self.image.get_rect(center=self.pos)
+        self.health = 250
+        self.life   = 15.0
+        self.age    = 0.0
 
     def update(self, dt):
         self.life -= dt
+        self.age  += dt
         return self.life > 0 and self.health > 0
 
+
+# ── Pickup ─────────────────────────────────────────────────────────────────────
+class Pickup(pygame.sprite.Sprite):
+    TYPES = {
+        "ammo":   (NEON_CYAN,   "+25 AMMO"),
+        "health": ((50, 220, 80), "+30 HP"),
+    }
+    def __init__(self, pos, kind="ammo"):
+        super().__init__()
+        self.pos  = pygame.math.Vector2(pos)
+        self.kind = kind
+        self.age  = 0.0
+        color     = self.TYPES[kind][0]
+        img = pygame.Surface((28, 28), pygame.SRCALPHA)
+        pygame.draw.rect(img, (*color, 220), (4, 4, 20, 20), border_radius=6)
+        pygame.draw.rect(img, WHITE, (4, 4, 20, 20), 2, border_radius=6)
+        lbl = font_sm.render(kind[0].upper(), True, WHITE)
+        img.blit(lbl, lbl.get_rect(center=(14, 14)))
+        self.image = img
+        self.rect  = self.image.get_rect(center=self.pos)
+
+    def update(self, dt):
+        self.age += dt
+        self.rect.centery = int(self.pos.y + math.sin(self.age * 3) * 4)
+
+
+# ── Player ─────────────────────────────────────────────────────────────────────
 class Player(pygame.sprite.Sprite):
+    MAX_HEALTH = 100
+    MAX_AMMO   = 120
+
     def __init__(self):
         super().__init__()
-        self.pos = pygame.math.Vector2(MAP_SIZE // 2, MAP_SIZE // 2)
-        self.size = (100, 100)
-        self.image = assets.get_image("player", self.size)
-        self.rect = self.image.get_rect(center=self.pos)
-        self.speed = 6
-        self.health = 100
-        self.ammo = 50
-        self.upgrades = 0
-        self.dash_cooldown = 0
-        self.shield_cooldown = 0
-        self.shoot_timer = 0
-        self.is_dashing = False
-        self.dash_timer = 0
-        self.falling = False
-        self.scale = 1.0
+        self.pos    = pygame.math.Vector2(SCREEN_WIDTH // 2, SCREEN_HEIGHT // 2)
+        self.size   = (90, 90)
+        self.base_img = assets.get_image("player", self.size)
+        self.image  = self.base_img
+        self.rect   = self.image.get_rect(center=self.pos)
 
-    def move(self, dx, dy, terrain):
-        if self.falling: return
-        t_type = terrain.get_type(self.pos.x + dx, self.pos.y + dy)
-        
-        # Gravity/Hole Check
-        if t_type == "HOLE" and not self.is_dashing:
-            self.falling = True
-            return
+        self.speed         = 220           # px / sec
+        self.health        = self.MAX_HEALTH
+        self.ammo          = 80
+        self.score         = 0
+        self.kills         = 0
+        self.shoot_cooldown= 0.16
+        self.shoot_timer   = 0.0
+        self.dash_cooldown = 0.0
+        self.dash_cd_max   = 1.2
+        self.shield_cd     = 0.0
+        self.shield_cd_max = 3.5
+        self.emp_cd        = 0.0
+        self.emp_cd_max    = 5.0
+        self.is_dashing    = False
+        self.dash_timer    = 0.0
+        self.dash_dir      = pygame.math.Vector2(1, 0)
+        self.falling       = False
+        self.scale         = 1.0
+        self.hurt_flash    = 0.0
+        self.invincible    = 0.0  # dash i-frames
 
-        speed_mult = 0.5 if t_type == "WATER" else 1.0
-        if t_type not in ["FOREST", "ROCK"]:
-            self.pos.x += dx * speed_mult
-            self.pos.y += dy * speed_mult
-        
-        self.pos.x = max(50, min(MAP_SIZE - 50, self.pos.x))
-        self.pos.y = max(50, min(MAP_SIZE - 50, self.pos.y))
-        self.rect.center = self.pos
+    def _collide_free_pos(self, new_pos, room):
+        t = room.get_type(new_pos.x, new_pos.y)
+        if t in ("FOREST", "ROCK"):
+            return False, t
+        return True, t
 
-    def update(self, dt, keys, mouse_world_pos, terrain):
+    def move(self, dx, dy, room):
         if self.falling:
-            self.scale -= 2 * dt
-            if self.scale <= 0.1:
-                self.health = 0
-                return None
-            self.image = pygame.transform.rotozoom(assets.get_image("player", self.size), 0, self.scale)
-            self.rect = self.image.get_rect(center=self.pos)
             return None
 
-        if self.dash_cooldown > 0: self.dash_cooldown -= dt
-        if self.shield_cooldown > 0: self.shield_cooldown -= dt
-        if self.shoot_timer > 0: self.shoot_timer -= dt
+        new_pos = self.pos + pygame.math.Vector2(dx, dy)
 
-        # Dash
-        if keys[pygame.K_SPACE] and self.dash_cooldown <= 0:
-            self.is_dashing = True
-            self.dash_timer = 0.25
-            self.dash_cooldown = 1.5
-            move_vec = pygame.math.Vector2(0, 0)
-            if keys[pygame.K_w]: move_vec.y -= 1
-            if keys[pygame.K_s]: move_vec.y += 1
-            if keys[pygame.K_a]: move_vec.x -= 1
-            if keys[pygame.K_d]: move_vec.x += 1
-            self.dash_dir = move_vec.normalize() if move_vec.length() > 0 else (mouse_world_pos - self.pos).normalize()
+        # Screen-edge transitions
+        if new_pos.x < 10:   return "LEFT"
+        if new_pos.x > SCREEN_WIDTH - 10:  return "RIGHT"
+        if new_pos.y < 10:   return "UP"
+        if new_pos.y > SCREEN_HEIGHT - 10: return "DOWN"
 
-        if self.is_dashing:
-            self.move(self.dash_dir.x * 20, self.dash_dir.y * 20, terrain)
-            self.dash_timer -= dt
-            if self.dash_timer <= 0: self.is_dashing = False
-        else:
-            dx, dy = 0, 0
-            if keys[pygame.K_w]: dy -= self.speed
-            if keys[pygame.K_s]: dy += self.speed
-            if keys[pygame.K_a]: dx -= self.speed
-            if keys[pygame.K_d]: dx += self.speed
-            if dx != 0 and dy != 0: dx *= 0.707; dy *= 0.707
-            self.move(dx, dy, terrain)
-
-        # Gloo Wall
-        if keys[pygame.K_e] and self.shield_cooldown <= 0:
-            self.shield_cooldown = 4.0
-            angle = -math.degrees(math.atan2(mouse_world_pos.y - self.pos.y, mouse_world_pos.x - self.pos.x))
-            dist = 80
-            rad = math.radians(-angle)
-            wall_pos = self.pos + pygame.math.Vector2(math.cos(rad), math.sin(rad)) * dist
-            assets.play_sound("shield")
-            return GlooWall(wall_pos, angle)
-
-        # Rotation
-        angle = -math.degrees(math.atan2(mouse_world_pos.y - self.pos.y, mouse_world_pos.x - self.pos.x))
-        self.image = pygame.transform.rotate(assets.get_image("player", self.size), angle)
-        self.rect = self.image.get_rect(center=self.pos)
+        ok, t = self._collide_free_pos(new_pos, room)
+        if t == "HOLE" and not self.is_dashing:
+            self.falling = True
+            assets.play_sound("death", 0.7)
+            return None
+        if ok:
+            self.pos = new_pos
+        self.rect.center = self.pos
         return None
+
+    def update(self, dt, keys, mouse_pos, room, particles):
+        result = {"trans": None, "wall": None, "shockwave": False, "angle": 0}
+
+        # ── Falling death animation ──────────────────────────────────────────
+        if self.falling:
+            self.scale -= 3.0 * dt
+            if self.scale <= 0.05:
+                self.health = 0
+            sz = max(1, int(self.size[0] * max(0.05, self.scale)))
+            self.image = pygame.transform.rotozoom(
+                assets.get_image("player", self.size), 0, max(0.05, self.scale))
+            self.rect  = self.image.get_rect(center=self.pos)
+            return result
+
+        # ── Cooldown ticks ───────────────────────────────────────────────────
+        self.dash_cooldown = max(0, self.dash_cooldown - dt)
+        self.shield_cd     = max(0, self.shield_cd - dt)
+        self.emp_cd        = max(0, self.emp_cd - dt)
+        self.shoot_timer   = max(0, self.shoot_timer - dt)
+        self.hurt_flash    = max(0, self.hurt_flash - dt)
+        self.invincible    = max(0, self.invincible - dt)
+
+        # ── Dash ─────────────────────────────────────────────────────────────
+        if keys[pygame.K_SPACE] and self.dash_cooldown <= 0:
+            self.is_dashing    = True
+            self.dash_timer    = 0.22
+            self.dash_cooldown = self.dash_cd_max
+            self.invincible    = 0.25
+            mv = pygame.math.Vector2(
+                keys[pygame.K_d] - keys[pygame.K_a],
+                keys[pygame.K_s] - keys[pygame.K_w])
+            self.dash_dir = (mv.normalize() if mv.length() > 0
+                             else (mouse_pos - self.pos).normalize())
+            particles.emit(self.pos, NEON_CYAN, count=12, speed=5, life=0.4)
+            assets.play_sound("pickup", 0.4)
+
+        # ── EMP ──────────────────────────────────────────────────────────────
+        if keys[pygame.K_q] and self.emp_cd <= 0:
+            self.emp_cd = self.emp_cd_max
+            result["shockwave"] = True
+            particles.emit_burst(self.pos, NEON_CYAN, (100, 200, 255), count=30)
+            assets.play_sound("pickup", 0.6)
+
+        # ── Movement ─────────────────────────────────────────────────────────
+        if self.is_dashing:
+            result["trans"] = self.move(
+                self.dash_dir.x * 24, self.dash_dir.y * 24, room)
+            self.dash_timer -= dt
+            if self.dash_timer <= 0:
+                self.is_dashing = False
+            # dash particles trail
+            particles.emit(self.pos, (80, 200, 255), count=2, speed=2, life=0.25)
+        else:
+            dx = (keys[pygame.K_d] - keys[pygame.K_a]) * self.speed * dt
+            dy = (keys[pygame.K_s] - keys[pygame.K_w]) * self.speed * dt
+            if dx != 0 and dy != 0:
+                dx *= 0.707; dy *= 0.707
+            result["trans"] = self.move(dx, dy, room)
+
+        # ── Gloo Wall ────────────────────────────────────────────────────────
+        if keys[pygame.K_e] and self.shield_cd <= 0:
+            self.shield_cd = self.shield_cd_max
+            angle  = -math.degrees(math.atan2(
+                mouse_pos.y - self.pos.y, mouse_pos.x - self.pos.x))
+            rad    = math.radians(-angle)
+            wpos   = self.pos + pygame.math.Vector2(math.cos(rad), math.sin(rad)) * 100
+            assets.play_sound("shield", 0.8)
+            result["wall"] = GlooWall(wpos, angle)
+
+        # ── Rotation ─────────────────────────────────────────────────────────
+        angle    = -math.degrees(math.atan2(
+            mouse_pos.y - self.pos.y, mouse_pos.x - self.pos.x))
+        result["angle"] = angle
+
+        # tint red on hurt
+        base = assets.get_image("player", self.size)
+        if self.hurt_flash > 0:
+            tint  = base.copy()
+            red   = pygame.Surface(self.size, pygame.SRCALPHA)
+            red.fill((255, 0, 0, int(180 * self.hurt_flash)))
+            tint.blit(red, (0, 0), special_flags=pygame.BLEND_RGBA_ADD)
+            self.image = pygame.transform.rotate(tint, angle)
+        else:
+            self.image = pygame.transform.rotate(base, angle)
+        self.rect = self.image.get_rect(center=self.pos)
+
+        return result
+
+    def take_damage(self, amount):
+        if self.invincible > 0:
+            return
+        self.health    = max(0, self.health - amount)
+        self.hurt_flash = 0.35
+        self.invincible = 0.08
+
+
+# ── Enemy ──────────────────────────────────────────────────────────────────────
+ENEMY_STATS = {
+    "zombie": {"hp": 12,  "speed": (1.5, 3.0), "shoot_cd": 999, "dmg": 1, "score": 100, "size": (85,  85)},
+    "ranged": {"hp": 20,  "speed": (1.0, 1.8), "shoot_cd": 2.0, "dmg": 1, "score": 150, "size": (85,  85)},
+    "boss":   {"hp": 400, "speed": (0.8, 1.4), "shoot_cd": 0.38,"dmg": 3, "score": 500, "size": (130, 130)},
+}
+
 
 class Enemy(pygame.sprite.Sprite):
     def __init__(self, pos, e_type="zombie"):
         super().__init__()
-        self.pos = pygame.math.Vector2(pos)
+        self.pos    = pygame.math.Vector2(pos)
         self.e_type = e_type
-        self.size = (150, 150) if e_type == "boss" else (90, 90)
-        self.image = assets.get_image(e_type, self.size)
-        self.rect = self.image.get_rect(center=self.pos)
-        self.speed = random.uniform(1.5, 3.0)
-        self.health = 4 if e_type == "zombie" else (8 if e_type == "ranged" else 100)
-        self.shoot_timer = random.uniform(1.0, 4.0)
-        self.falling = False
-        self.scale = 1.0
+        stats       = ENEMY_STATS[e_type]
+        self.size   = stats["size"]
+        self.base_img = assets.get_image(e_type, self.size)
+        self.image  = self.base_img
+        self.rect   = self.image.get_rect(center=self.pos)
+        self.speed  = random.uniform(*stats["speed"])
+        self.health = stats["hp"]
+        self.max_hp = stats["hp"]
+        self.shoot_cd    = stats["shoot_cd"]
+        self.shoot_timer = random.uniform(1.0, 3.0)
+        self.dmg         = stats["dmg"]
+        self.score_val   = stats["score"]
+        self.stunned  = 0.0
+        self.falling  = False
+        self.scale    = 1.0
+        self.hurt_flash = 0.0
+        # Wandering for ranged
+        self.wander_timer = 0.0
+        self.wander_dir   = pygame.math.Vector2(random.uniform(-1,1), random.uniform(-1,1)).normalize()
 
-    def update(self, dt, player_pos, terrain, walls):
+    def update(self, dt, player_pos, room, particles):
+        if self.stunned > 0:
+            self.stunned = max(0, self.stunned - dt)
+            return None
         if self.falling:
-            self.scale -= 2 * dt
-            if self.scale <= 0.1:
+            self.scale -= 3.0 * dt
+            if self.scale <= 0.05:
                 self.kill()
-            self.image = pygame.transform.rotozoom(assets.get_image(self.e_type, self.size), 0, self.scale)
-            self.rect = self.image.get_rect(center=self.pos)
+            self.image = pygame.transform.rotozoom(
+                assets.get_image(self.e_type, self.size), 0, max(0.05, self.scale))
+            self.rect  = self.image.get_rect(center=self.pos)
             return None
 
-        dir_vec = (player_pos - self.pos)
-        dist = dir_vec.length()
-        
-        if dist > 0:
-            dir_vec = dir_vec.normalize()
-            if self.e_type == "ranged" and dist < 350:
-                move_dir = -dir_vec
-            elif self.e_type == "ranged" and dist > 450:
-                move_dir = dir_vec
-            elif self.e_type == "ranged":
-                move_dir = pygame.math.Vector2(0,0)
-            else:
-                move_dir = dir_vec
-            
-            target_pos = self.pos + move_dir * self.speed
-            t_type = terrain.get_type(target_pos.x, target_pos.y)
-            
-            if t_type == "HOLE":
-                self.falling = True
-            elif t_type not in ["FOREST", "ROCK"]:
-                self.pos = target_pos
-        
+        self.hurt_flash = max(0, self.hurt_flash - dt)
+
+        dist = (player_pos - self.pos).length()
+
+        # Movement
+        if self.e_type == "ranged" and dist < 200:
+            # strafe away
+            self.wander_timer -= dt
+            if self.wander_timer <= 0:
+                self.wander_timer = random.uniform(0.5, 1.5)
+                perp = pygame.math.Vector2(-(player_pos - self.pos).y, (player_pos - self.pos).x)
+                if perp.length() > 0:
+                    self.wander_dir = perp.normalize()
+            move_vec = self.wander_dir
+        else:
+            dir_vec = player_pos - self.pos
+            move_vec = dir_vec.normalize() if dir_vec.length() > 0 else pygame.math.Vector2(0,0)
+
+        new_pos  = self.pos + move_vec * self.speed
+        t_type   = room.get_type(new_pos.x, new_pos.y)
+        if t_type == "HOLE":
+            self.falling = True
+        elif t_type not in ("FOREST", "ROCK"):
+            self.pos = new_pos
         self.rect.center = self.pos
-        angle = -math.degrees(math.atan2(player_pos.y - self.pos.y, player_pos.x - self.pos.x))
-        self.image = pygame.transform.rotate(assets.get_image(self.e_type, self.size), angle)
-        
-        # Enemy Shooting
-        self.shoot_timer -= dt
-        if self.shoot_timer <= 0:
-            if self.e_type == "zombie":
-                self.shoot_timer = random.uniform(3.0, 6.0)
-                return Bullet(self.pos, angle, is_enemy=True)
-            elif self.e_type == "ranged":
-                self.shoot_timer = 1.5
-                return Bullet(self.pos, angle, is_enemy=True)
-            elif self.e_type == "boss":
-                self.shoot_timer = 0.4
-                # Rapid fire for boss
-                return Bullet(self.pos, angle + random.uniform(-10, 10), is_enemy=True)
-        return None
 
-# --- Main Game Loop ---
+        # Rotate toward player
+        angle = -math.degrees(math.atan2(
+            player_pos.y - self.pos.y, player_pos.x - self.pos.x))
+        base = assets.get_image(self.e_type, self.size)
+        if self.hurt_flash > 0:
+            tint = base.copy()
+            red  = pygame.Surface(self.size, pygame.SRCALPHA)
+            red.fill((255, 0, 0, int(180 * self.hurt_flash)))
+            tint.blit(red, (0,0), special_flags=pygame.BLEND_RGBA_ADD)
+            self.image = pygame.transform.rotate(tint, angle)
+        else:
+            self.image = pygame.transform.rotate(base, angle)
 
+        # Shooting
+        bullet = None
+        if self.e_type in ("ranged", "boss"):
+            self.shoot_timer -= dt
+            if self.shoot_timer <= 0:
+                self.shoot_timer = self.shoot_cd + random.uniform(-0.1, 0.3)
+                if self.e_type == "boss":
+                    # triple shot
+                    return [Bullet(self.pos, angle + offset, is_enemy=True, damage=self.dmg)
+                            for offset in (-12, 0, 12)]
+                bullet = Bullet(self.pos, angle, is_enemy=True, damage=self.dmg)
+        return bullet
+
+    def take_hit(self, damage, particles):
+        self.health    -= damage
+        self.hurt_flash = 0.3
+        particles.emit(self.pos, BLOOD_COLOR, count=6, speed=4, life=0.5)
+
+
+# ── Shockwave visual ───────────────────────────────────────────────────────────
+class Shockwave:
+    def __init__(self, pos):
+        self.pos    = pygame.math.Vector2(pos)
+        self.radius = 10
+        self.max_r  = 260
+        self.life   = 1.0
+        self.age    = 0.0
+
+    def update(self, dt):
+        self.age    += dt
+        self.radius  = self.max_r * (self.age / self.life)
+        return self.age < self.life
+
+    def draw(self, surface):
+        t     = self.age / self.life
+        alpha = int(200 * (1 - t))
+        r     = int(self.radius)
+        if r > 0:
+            s = pygame.Surface((r*2+4, r*2+4), pygame.SRCALPHA)
+            pygame.draw.circle(s, (0, 230, 255, alpha), (r+2, r+2), r, 3)
+            surface.blit(s, (int(self.pos.x)-r-2, int(self.pos.y)-r-2))
+
+
+# ── HUD ────────────────────────────────────────────────────────────────────────
+def draw_hud(surface, player, room_x, room_y):
+    # Health bar
+    BAR_W, BAR_H = 200, 18
+    bx, by = 18, 18
+    pygame.draw.rect(surface, (60, 20, 20), (bx, by, BAR_W, BAR_H), border_radius=4)
+    hp_w = max(0, int(BAR_W * player.health / player.MAX_HEALTH))
+    hp_color = (
+        (50, 220, 80) if player.health > 60
+        else (230, 180, 20) if player.health > 30
+        else (230, 50, 50))
+    pygame.draw.rect(surface, hp_color, (bx, by, hp_w, BAR_H), border_radius=4)
+    pygame.draw.rect(surface, WHITE, (bx, by, BAR_W, BAR_H), 2, border_radius=4)
+    ht = font_sm.render(f"HP  {player.health}/{player.MAX_HEALTH}", True, WHITE)
+    surface.blit(ht, (bx + 4, by + 1))
+
+    # Ammo
+    ammo_col = NEON_CYAN if player.ammo > 20 else (230, 80, 50)
+    surface.blit(font_sm.render(f"AMMO  {player.ammo}", True, ammo_col), (bx, by + 26))
+
+    # Room / Score
+    surface.blit(font_sm.render(
+        f"ROOM [{room_x:+d},{room_y:+d}]  SCORE {player.score}  KILLS {player.kills}",
+        True, (180, 180, 180)), (bx, by + 48))
+
+    # Ability cooldowns
+    def _cd_bar(label, cd, cd_max, x, y, color):
+        W, H = 80, 8
+        ratio = 1 - (cd / cd_max) if cd_max > 0 else 1
+        pygame.draw.rect(surface, (50, 50, 60), (x, y, W, H), border_radius=3)
+        pygame.draw.rect(surface, color if ratio >= 1 else (100,100,110),
+                         (x, y, int(W * ratio), H), border_radius=3)
+        pygame.draw.rect(surface, (150,150,160), (x, y, W, H), 1, border_radius=3)
+        surface.blit(font_sm.render(label, True, color if ratio >= 1 else (120,120,130)),
+                     (x, y + 10))
+
+    _cd_bar("[SPACE] DASH",   player.dash_cooldown,  player.dash_cd_max,  18, 80, NEON_CYAN)
+    _cd_bar("[E] WALL",       player.shield_cd,      player.shield_cd_max, 18, 108, (100, 200, 255))
+    _cd_bar("[Q] EMP",        player.emp_cd,         player.emp_cd_max,   18, 136, NEON_ORANGE)
+
+    # Minimap
+    mm_x, mm_y, mm_s = SCREEN_WIDTH - 110, 18, 90
+    overlay = pygame.Surface((mm_s, mm_s), pygame.SRCALPHA)
+    overlay.fill((0, 0, 0, 120))
+    surface.blit(overlay, (mm_x, mm_y))
+    pygame.draw.rect(surface, (80, 80, 100), (mm_x, mm_y, mm_s, mm_s), 1)
+    dot_x = mm_x + mm_s // 2
+    dot_y = mm_y + mm_s // 2
+    pygame.draw.circle(surface, NEON_CYAN, (dot_x, dot_y), 4)
+    surface.blit(font_sm.render(f"{room_x:+d},{room_y:+d}", True, (150, 150, 170)),
+                 (mm_x + 4, mm_y + mm_s - 18))
+
+
+def draw_menu(surface, tick):
+    # Dark overlay with scanlines
+    overlay = pygame.Surface((SCREEN_WIDTH, SCREEN_HEIGHT), pygame.SRCALPHA)
+    overlay.fill((0, 0, 0, 200))
+    surface.blit(overlay, (0, 0))
+    for sy in range(0, SCREEN_HEIGHT, 4):
+        pygame.draw.line(surface, (0, 0, 0, 30), (0, sy), (SCREEN_WIDTH, sy))
+
+    # Animated title
+    t       = math.sin(tick * 0.002) * 4
+    title   = font_xl.render("GODFIRE", True, UI_ACCENT)
+    shadow  = font_xl.render("GODFIRE", True, (80, 30, 10))
+    surface.blit(shadow, (SCREEN_WIDTH//2 - title.get_width()//2 + 3, 155 + int(t) + 3))
+    surface.blit(title,  (SCREEN_WIDTH//2 - title.get_width()//2,     155 + int(t)))
+
+    sub = font_md.render("FOREST SHADOWS", True, (200, 130, 80))
+    surface.blit(sub, (SCREEN_WIDTH//2 - sub.get_width()//2, 250))
+
+    # Pulsing prompt
+    alpha  = int(160 + 95 * math.sin(tick * 0.004))
+    prompt = font_md.render("── SPACE TO BEGIN ──", True, WHITE)
+    ps = pygame.Surface(prompt.get_size(), pygame.SRCALPHA)
+    ps.blit(prompt, (0, 0))
+    ps.set_alpha(alpha)
+    surface.blit(ps, (SCREEN_WIDTH//2 - prompt.get_width()//2, 330))
+
+    controls = [
+        "WASD   Move        MOUSE   Aim",
+        "LMB    Shoot       SPACE   Dash",
+        "E      Gloo Wall   Q       EMP Blast",
+    ]
+    for i, line in enumerate(controls):
+        ct = font_sm.render(line, True, (130, 130, 150))
+        surface.blit(ct, (SCREEN_WIDTH//2 - ct.get_width()//2, 410 + i * 22))
+
+
+def draw_game_over(surface, player):
+    overlay = pygame.Surface((SCREEN_WIDTH, SCREEN_HEIGHT), pygame.SRCALPHA)
+    overlay.fill((0, 0, 0, 210))
+    surface.blit(overlay, (0, 0))
+
+    go   = font_lg.render("DEFEATED", True, (220, 50, 50))
+    surface.blit(go, (SCREEN_WIDTH//2 - go.get_width()//2, 200))
+
+    stats = [
+        f"SCORE : {player.score}",
+        f"KILLS : {player.kills}",
+        f"AMMO LEFT : {player.ammo}",
+    ]
+    for i, s in enumerate(stats):
+        t = font_md.render(s, True, (180, 180, 180))
+        surface.blit(t, (SCREEN_WIDTH//2 - t.get_width()//2, 290 + i*36))
+
+    restart = font_md.render("[ R ]  RESTART", True, NEON_CYAN)
+    surface.blit(restart, (SCREEN_WIDTH//2 - restart.get_width()//2, 420))
+
+
+# ── Main ───────────────────────────────────────────────────────────────────────
 def main():
-    terrain = TerrainGenerator(MAP_SIZE)
-    camera = Camera()
-    particles = ParticleManager()
-    floating_texts = []
-    
-    player = Player()
-    all_sprites = pygame.sprite.Group()
-    bullets = pygame.sprite.Group()
-    enemy_bullets = pygame.sprite.Group()
-    enemies = pygame.sprite.Group()
-    resources = pygame.sprite.Group()
-    walls = pygame.sprite.Group()
-    
-    all_sprites.add(player)
-    
-    state = "MENU"
-    score = 0
-    spawn_timer = 0
-    level = 1
+    room_x, room_y = 0, 0
+    current_room   = Room(room_x, room_y)
+    lighting       = LightingSystem()
+    particles      = ParticleManager()
+    player         = Player()
 
-    # Initial Resources
-    for _ in range(10):
-        r_pos = pygame.math.Vector2(random.randint(100, MAP_SIZE-100), random.randint(100, MAP_SIZE-100))
-        if terrain.get_type(r_pos.x, r_pos.y) == "GRASS":
-            res = Resource(r_pos, random.choice(["ammo", "upgrade"]))
-            resources.add(res)
+    bullets       = pygame.sprite.Group()
+    enemy_bullets = pygame.sprite.Group()
+    enemies       = pygame.sprite.Group()
+    walls         = pygame.sprite.Group()
+    pickups       = pygame.sprite.Group()
+    shockwaves: list[Shockwave] = []
+
+    state = "MENU"
+    tick  = 0
+
+    # ── Screen-shake ──────────────────────────────────────────────────────────
+    shake_dur   = 0.0
+    shake_power = 0
+    cam_offset  = pygame.math.Vector2(0, 0)
+
+    def screenshake(dur=0.25, power=6):
+        nonlocal shake_dur, shake_power
+        shake_dur   = dur
+        shake_power = power
+
+    def spawn_enemies():
+        enemies.empty()
+        pickups.empty()
+        depth = abs(room_x) + abs(room_y)
+        count = 4 + depth
+        for _ in range(count):
+            e_pos = (random.randint(160, SCREEN_WIDTH - 160),
+                     random.randint(160, SCREEN_HEIGHT - 160))
+            e_type = "zombie"
+            roll   = random.random()
+            if depth >= 2 and roll < 0.25:
+                e_type = "ranged"
+            if depth >= 3 and roll < 0.10:
+                e_type = "boss"
+            enemies.add(Enemy(e_pos, e_type))
+        # Chance for pickups
+        if random.random() < 0.5:
+            px = (random.randint(100, SCREEN_WIDTH - 100),
+                  random.randint(100, SCREEN_HEIGHT - 100))
+            pickups.add(Pickup(px, random.choice(["ammo", "health"])))
+
+    spawn_enemies()
 
     while True:
-        dt = clock.tick(FPS) / 1000.0
-        mouse_world_pos = pygame.math.Vector2(pygame.mouse.get_pos()) + camera.offset
-        
+        dt  = min(clock.tick(FPS) / 1000.0, 0.05)  # cap dt
+        tick += 1
+        mouse_raw = pygame.math.Vector2(pygame.mouse.get_pos())
+
+        # Screenshake update
+        if shake_dur > 0:
+            shake_dur  = max(0, shake_dur - dt)
+            cam_offset = pygame.math.Vector2(
+                random.uniform(-shake_power, shake_power),
+                random.uniform(-shake_power, shake_power)) * (shake_dur / 0.25)
+        else:
+            cam_offset = pygame.math.Vector2(0, 0)
+
+        mouse_pos = mouse_raw - cam_offset
+
+        # ── Music ─────────────────────────────────────────────────────────────
+        if state == "MENU":
+            assets.play_music("theme_song", volume=0.5)
+        elif state == "PLAYING":
+            assets.play_music("battle", volume=0.55)
+        elif state == "GAME_OVER":
+            assets.stop_music()
+
+        # ── Events ────────────────────────────────────────────────────────────
         for event in pygame.event.get():
-            if event.type == pygame.QUIT: pygame.quit(); return
+            if event.type == pygame.QUIT:
+                pygame.quit(); sys.exit()
             if event.type == pygame.KEYDOWN:
-                if state == "MENU" and event.key == pygame.K_SPACE: state = "PLAYING"
-                if state == "GAME_OVER" and event.key == pygame.K_r: main(); return
+                if state == "MENU" and event.key == pygame.K_SPACE:
+                    state = "PLAYING"
+                if state == "GAME_OVER" and event.key == pygame.K_r:
+                    main(); return
 
+        # ── Game Logic ────────────────────────────────────────────────────────
         if state == "PLAYING":
-            keys = pygame.key.get_pressed()
-            
-            # Player Actions
-            wall = player.update(dt, keys, mouse_world_pos, terrain)
-            if wall: walls.add(wall)
-            
-            if pygame.mouse.get_pressed()[0] and player.shoot_timer <= 0 and player.ammo > 0:
-                player.shoot_timer = 0.2 - (player.upgrades * 0.02)
+            keys   = pygame.key.get_pressed()
+            p_data = player.update(dt, keys, mouse_pos, current_room, particles)
+            trans, wall_obj  = p_data["trans"], p_data["wall"]
+            shockwave_active = p_data["shockwave"]
+            p_angle          = p_data["angle"]
+
+            if wall_obj:
+                walls.add(wall_obj)
+
+            if shockwave_active:
+                shockwaves.append(Shockwave(player.pos))
+                screenshake(0.3, 8)
+                for e in list(enemies):
+                    d = e.pos.distance_to(player.pos)
+                    if d < 260:
+                        e.stunned = 2.0 + random.uniform(0, 0.5)
+                        diff = e.pos - player.pos
+                        if diff.length() > 0:
+                            e.pos += diff.normalize() * 60
+
+            # Shoot
+            if (pygame.mouse.get_pressed()[0]
+                    and player.shoot_timer <= 0
+                    and player.ammo > 0
+                    and not player.falling):
+                player.shoot_timer = player.shoot_cooldown
                 player.ammo -= 1
-                angle = -math.degrees(math.atan2(mouse_world_pos.y - player.pos.y, mouse_world_pos.x - player.pos.x))
-                b = Bullet(player.pos, angle)
-                bullets.add(b)
-                camera.shake(3, 0.1)
-                assets.play_sound("shoot")
+                bullets.add(Bullet(player.pos, p_angle))
+                assets.play_sound("shoot", 0.6)
+                particles.emit(player.pos, (255, 230, 80), count=3, speed=6, life=0.2)
 
-            # Updates
-            camera.update(player.pos, dt)
+            # Room transition
+            if trans:
+                dirs = {"LEFT":  (-1,0,"x",SCREEN_WIDTH-65),
+                        "RIGHT": (+1,0,"x",65),
+                        "UP":    (0,-1,"y",SCREEN_HEIGHT-65),
+                        "DOWN":  (0,+1,"y",65)}
+                dx_, dy_, ax, av = dirs[trans]
+                room_x += dx_; room_y += dy_
+                setattr(player.pos, ax, av)
+                current_room = Room(room_x, room_y)
+                
+                # Clear the tile the player spawns on so they never get stuck
+                gx, gy = int(player.pos.x // TILE_SIZE), int(player.pos.y // TILE_SIZE)
+                if 0 <= gx < 8 and 0 <= gy < 6:
+                    if current_room.grid[gy][gx] in (1, 3, 4): # Rock, Hole, Forest
+                        current_room.grid[gy][gx] = 0 # Turn to Grass
+                
+                spawn_enemies()
+                enemy_bullets.empty()
+                bullets.empty()
+                walls.empty()
+                shockwaves.clear()
+
+            # Pickups
+            for pu in list(pickups):
+                pu.update(dt)
+                if pu.rect.collidepoint(player.pos):
+                    if pu.kind == "ammo":
+                        player.ammo = min(player.MAX_AMMO, player.ammo + 25)
+                    else:
+                        player.health = min(player.MAX_HEALTH, player.health + 30)
+                    particles.emit(pu.pos, (80, 255, 120), count=12, speed=5, life=0.6)
+                    assets.play_sound("pickup", 0.7)
+                    pu.kill()
+
+            # Particles / shockwaves
             particles.update(dt)
-            
-            for b in bullets:
-                res = b.update(dt, terrain)
-                if res == "hit_solid": b.kill(); particles.emit(b.pos, COLOR_ROCK, count=3)
-                elif res == "kill": b.kill()
+            shockwaves = [sw for sw in shockwaves if sw.update(dt)]
 
-            for eb in enemy_bullets:
-                res = eb.update(dt, terrain)
-                if res == "hit_solid": eb.kill()
-                elif res == "kill": eb.kill()
+            # Bullet updates
+            for b in list(bullets):
+                if b.update(dt, current_room) == "kill":
+                    particles.emit(b.pos, (255, 230, 80), count=3, speed=3, life=0.3)
+                    b.kill()
+            for eb in list(enemy_bullets):
+                if eb.update(dt, current_room) == "kill":
+                    eb.kill()
 
-            # Enemy Spawning
-            spawn_timer += dt
-            if spawn_timer > max(0.4, 1.8 - level * 0.1):
-                spawn_timer = 0
-                angle = random.uniform(0, math.pi*2)
-                sp_pos = player.pos + pygame.math.Vector2(math.cos(angle), math.sin(angle)) * 700
-                if 0 < sp_pos.x < MAP_SIZE and 0 < sp_pos.y < MAP_SIZE:
-                    e_type = "zombie"
-                    # Higher probability for ranged and bosses
-                    rand_val = random.random()
-                    if level > 1 and rand_val < 0.4: e_type = "ranged"
-                    if score > 500 and rand_val < 0.15: e_type = "boss" # Lower threshold and higher probability
-                    e = Enemy(sp_pos, e_type)
-                    enemies.add(e)
+            # Enemy updates
+            for e in list(enemies):
+                result = e.update(dt, player.pos, current_room, particles)
+                if isinstance(result, list):
+                    for nb in result:
+                        enemy_bullets.add(nb)
+                elif result:
+                    enemy_bullets.add(result)
 
-            for e in enemies:
-                eb = e.update(dt, player.pos, terrain, walls)
-                if eb: enemy_bullets.add(eb)
-
+            # Wall updates
             for w in list(walls):
-                if not w.update(dt): walls.remove(w)
+                if not w.update(dt):
+                    walls.remove(w)
 
-            # Collisions
-            # Bullets vs Enemies
+            # Wall + enemy bullets
+            for w in list(walls):
+                hits = pygame.sprite.spritecollide(w, enemy_bullets, True)
+                for _ in hits:
+                    w.health -= 30
+                    particles.emit(w.pos, NEON_CYAN, count=4, speed=3, life=0.3)
+
+            # Player bullets hit enemies
             hits = pygame.sprite.groupcollide(enemies, bullets, False, True)
             for e, blist in hits.items():
-                e.health -= len(blist)
-                particles.emit(e.pos, BLOOD_COLOR, count=5)
+                total = sum(b.damage for b in blist)
+                e.take_hit(total, particles)
+                screenshake(0.08, 3)
                 if e.health <= 0:
+                    particles.emit_burst(e.pos, BLOOD_COLOR, (255, 60, 30), count=25)
+                    screenshake(0.2, 6)
+                    player.score  += e.score_val
+                    player.kills  += 1
+                    # drop pickup chance
+                    if random.random() < 0.18:
+                        pickups.add(Pickup(e.pos, random.choice(["ammo", "health"])))
                     e.kill()
-                    score += 100 if e.e_type != "boss" else 1000
-                    floating_texts.append(FloatingText(e.pos, "+Score", UI_ACCENT))
-                    assets.play_sound("death")
-            
-            # Enemy Bullets vs Player/Walls
-            p_hit = pygame.sprite.spritecollide(player, enemy_bullets, True)
-            if p_hit and not player.is_dashing:
-                player.health -= 10 * len(p_hit)
-                camera.shake(10, 0.2)
-                if player.health <= 0: state = "GAME_OVER"
+                    assets.play_sound("death", 0.65)
 
-            wall_hits = pygame.sprite.groupcollide(walls, enemy_bullets, False, True)
-            for w, blist in wall_hits.items():
-                w.health -= 10 * len(blist)
+            # Enemy bullets hit player
+            if not player.is_dashing and not player.falling and player.invincible <= 0:
+                eb_hits = pygame.sprite.spritecollide(player, enemy_bullets, True)
+                for eb in eb_hits:
+                    player.take_damage(eb.damage)
+                    screenshake(0.2, 5)
+                    particles.emit(player.pos, BLOOD_COLOR, count=8, speed=4, life=0.5)
+                # Melee enemies
+                melee_hits = pygame.sprite.spritecollide(player, enemies, False)
+                if melee_hits:
+                    player.take_damage(0.6 * dt * len(melee_hits) * 60)
+                    particles.emit(player.pos, BLOOD_COLOR, count=1, speed=2, life=0.3)
 
-            # Player vs Enemies (Melee)
-            if not player.is_dashing:
-                m_hits = pygame.sprite.spritecollide(player, enemies, True)
-                if m_hits:
-                    player.health -= 20 * len(m_hits)
-                    camera.shake(15, 0.3)
-                    if player.health <= 0: state = "GAME_OVER"
-            else:
-                d_hits = pygame.sprite.spritecollide(player, enemies, True)
-                for de in d_hits:
-                    score += 200
-                    particles.emit(de.pos, BLOOD_COLOR, count=15)
+            if player.health <= 0:
+                state = "GAME_OVER"
 
-            # Resource Collection
-            res_hits = pygame.sprite.spritecollide(player, resources, True)
-            for r in res_hits:
-                if r.r_type == "ammo": player.ammo += 20
-                else: player.upgrades += 1
-                assets.play_sound("pickup")
+        # ── Render ─────────────────────────────────────────────────────────────
+        # Shift surface for screenshake
+        game_surf = pygame.Surface((SCREEN_WIDTH, SCREEN_HEIGHT))
+        game_surf.fill(DARK_BG)
 
-            floating_texts = [ft for ft in floating_texts if ft.update(dt)]
-            if score > level * 2000: level += 1
+        current_room.draw(game_surf)
 
-        # --- Draw ---
-        BG_COLOR = (0,0,0)
-        screen.fill(BG_COLOR)
-        
-        # Terrain Rendering (Tiles in view)
-        view_x = int(camera.offset.x // TILE_SIZE)
-        view_y = int(camera.offset.y // TILE_SIZE)
-        for gy in range(view_y, view_y + (SCREEN_HEIGHT // TILE_SIZE) + 2):
-            for gx in range(view_x, view_x + (SCREEN_WIDTH // TILE_SIZE) + 2):
-                if 0 <= gx < terrain.grid_size and 0 <= gy < terrain.grid_size:
-                    rect = pygame.Rect(gx * TILE_SIZE - camera.offset.x, gy * TILE_SIZE - camera.offset.y, TILE_SIZE, TILE_SIZE)
-                    t_type = terrain.get_type(gx * TILE_SIZE, gy * TILE_SIZE)
-                    color = COLOR_GRASS
-                    if t_type == "HOLE": color = COLOR_HOLE
-                    elif t_type == "WATER": color = COLOR_WATER
-                    elif t_type == "RIVER_EDGE": color = COLOR_RIVER_EDGE
-                    elif t_type == "FOREST": color = COLOR_FOREST
-                    elif t_type == "ROCK": color = COLOR_ROCK
-                    pygame.draw.rect(screen, color, rect)
+        # Wall glow effect
+        for w in walls:
+            glow = pygame.Surface((w.rect.width + 20, w.rect.height + 20), pygame.SRCALPHA)
+            glow.fill((100, 200, 255, 30))
+            game_surf.blit(glow, (w.rect.x - 10, w.rect.y - 10))
+            game_surf.blit(w.image, w.rect)
 
-        # Entities
-        for r in resources: screen.blit(r.image, camera.apply(r.pos - pygame.math.Vector2(15, 15)))
-        for w in walls: screen.blit(w.image, camera.apply(pygame.math.Vector2(w.rect.topleft)))
-        for b in bullets: screen.blit(b.image, camera.apply(b.pos - pygame.math.Vector2(12, 12)))
-        for eb in enemy_bullets: screen.blit(eb.image, camera.apply(eb.pos - pygame.math.Vector2(12, 12)))
-        for e in enemies: screen.blit(e.image, camera.apply(e.pos - pygame.math.Vector2(e.rect.width//2, e.rect.height//2)))
-        
-        particles.draw(screen, camera)
-        screen.blit(player.image, camera.apply(player.pos - pygame.math.Vector2(50, 50)))
-        for ft in floating_texts: ft.draw(screen, camera)
+        # Bullet trails then sprites
+        for b in bullets:
+            b.draw_trail(game_surf)
+            game_surf.blit(b.image, b.rect)
+        for eb in enemy_bullets:
+            eb.draw_trail(game_surf)
+            game_surf.blit(eb.image, eb.rect)
 
-        # HUD
+        # Pickups
+        for pu in pickups:
+            game_surf.blit(pu.image, pu.rect)
+
+        # Enemies (health bars)
+        for e in enemies:
+            game_surf.blit(e.image, e.rect)
+            if e.health < e.max_hp and not e.falling:
+                bw = 50
+                bx = e.rect.centerx - bw//2
+                by = e.rect.top - 8
+                pygame.draw.rect(game_surf, (80, 20, 20),  (bx, by, bw, 5), border_radius=2)
+                hp_ratio = max(0, e.health / e.max_hp)
+                pygame.draw.rect(game_surf, (220, 50, 50), (bx, by, int(bw * hp_ratio), 5), border_radius=2)
+
+        particles.draw(game_surf)
+
+        for sw in shockwaves:
+            sw.draw(game_surf)
+
+        game_surf.blit(player.image, player.rect)
+
+        # Lighting
         if state != "MENU":
-            pygame.draw.rect(screen, (50, 0, 0), (20, 20, 200, 20))
-            pygame.draw.rect(screen, (200, 50, 50), (20, 20, player.health * 2, 20))
-            ammo_surf = font_md.render(f"AMMO: {player.ammo}", True, WHITE)
-            score_surf = font_md.render(f"SCORE: {score}", True, UI_ACCENT)
-            screen.blit(ammo_surf, (20, 50))
-            screen.blit(score_surf, (20, 85))
-            if player.shield_cooldown > 0:
-                s_txt = font_sm.render(f"SHIELD COOLDOWN: {int(player.shield_cooldown)}s", True, (100, 200, 255))
-                screen.blit(s_txt, (20, 120))
+            extra = [(e.pos.x, e.pos.y, 80, 60) for e in enemies if e.e_type == "boss"]
+            lighting.render(game_surf, player.pos, extra_lights=extra or None)
 
+        # Blit with shake offset
+        ox, oy = int(cam_offset.x), int(cam_offset.y)
+        screen.fill(DARK_BG)
+        screen.blit(game_surf, (ox, oy))
+
+        # HUD (no shake)
+        if state == "PLAYING":
+            draw_hud(screen, player, room_x, room_y)
+
+        # Overlays
         if state == "MENU":
-            overlay = pygame.Surface((SCREEN_WIDTH, SCREEN_HEIGHT), pygame.SRCALPHA)
-            overlay.fill((0, 0, 0, 200))
-            screen.blit(overlay, (0, 0))
-            title = font_lg.render("GODFIRE: FOREST", True, UI_ACCENT)
-            subtitle = font_md.render("Press SPACE to Survival", True, WHITE)
-            instr = font_sm.render("WASD: Move | SPACE: Dash | E: Gloo Wall | MOUSE: Shoot", True, (180, 180, 180))
-            screen.blit(title, (SCREEN_WIDTH//2 - title.get_width()//2, 200))
-            screen.blit(subtitle, (SCREEN_WIDTH//2 - subtitle.get_width()//2, 300))
-            screen.blit(instr, (SCREEN_WIDTH//2 - instr.get_width()//2, 450))
-
-        if state == "GAME_OVER":
-            overlay = pygame.Surface((SCREEN_WIDTH, SCREEN_HEIGHT), pygame.SRCALPHA)
-            overlay.fill((100, 0, 0, 150))
-            screen.blit(overlay, (0, 0))
-            go_txt = font_lg.render("DEFEATED", True, WHITE)
-            screen.blit(go_txt, (SCREEN_WIDTH//2 - go_txt.get_width()//2, 250))
+            current_room.draw(screen)  # show bg behind menu
+            draw_menu(screen, tick)
+        elif state == "GAME_OVER":
+            draw_game_over(screen, player)
 
         pygame.display.flip()
+
 
 if __name__ == "__main__":
     main()
