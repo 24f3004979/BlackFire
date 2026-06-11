@@ -505,6 +505,98 @@ class Player(pygame.sprite.Sprite):
         self.invincible = 0.08
 
 
+# ── Swarm Intelligence (Conway's Game of Life) ────────────────────────────────
+class SwarmController:
+    def __init__(self, width, height, cell_size):
+        self.cell_size = cell_size
+        self.cols = width // cell_size
+        self.rows = height // cell_size
+        self.grid = [[0 for _ in range(self.cols)] for _ in range(self.rows)]
+        self.update_timer = 0.0
+        self.update_interval = 1.0  # Apply GoL rules every 1 second
+
+    def update(self, dt, enemies, room_x, room_y):
+        self.update_timer += dt
+        
+        # Reset grid counts
+        new_grid = [[0 for _ in range(self.cols)] for _ in range(self.rows)]
+        for e in enemies:
+            gx = int(e.pos.x // self.cell_size)
+            gy = int(e.pos.y // self.cell_size)
+            if 0 <= gx < self.cols and 0 <= gy < self.rows:
+                new_grid[gy][gx] += 1
+        self.grid = new_grid
+
+        if self.update_timer >= self.update_interval:
+            self.update_timer = 0
+            return self._apply_rules(enemies, room_x, room_y)
+        return []
+
+    def _apply_rules(self, enemies, room_x, room_y):
+        new_enemies = []
+        # GoL logic: 1 if cell has enemies, 0 otherwise
+        binary_grid = [[1 if self.grid[y][x] > 0 else 0 for x in range(self.cols)] for y in range(self.rows)]
+        
+        spawn_candidates = []
+
+        for y in range(self.rows):
+            for x in range(self.cols):
+                neighbors = 0
+                for dy in [-1, 0, 1]:
+                    for dx in [-1, 0, 1]:
+                        if dx == 0 and dy == 0: continue
+                        nx, ny = x + dx, y + dy
+                        if 0 <= nx < self.cols and 0 <= ny < self.rows:
+                            neighbors += binary_grid[ny][nx]
+                
+                # Rule: Reproduction
+                if binary_grid[y][x] == 0 and neighbors == 3:
+                    # Only spawn if total enemies aren't too many
+                    if len(enemies) + len(new_enemies) < 15 + (abs(room_x) + abs(room_y)) * 2:
+                        spawn_candidates.append((x, y))
+
+                # Rule: Overpopulation / Underpopulation for existing enemies
+                # We handle this by setting a 'gol_state' on the enemy
+                state = "stable"
+                if binary_grid[y][x] == 1:
+                    if neighbors < 2: state = "underpopulated"
+                    elif neighbors > 3: state = "overpopulated"
+                
+                # Update enemies in this cell
+                for e in enemies:
+                    gx = int(e.pos.x // self.cell_size)
+                    gy = int(e.pos.y // self.cell_size)
+                    if gx == x and gy == y:
+                        e.gol_state = state
+
+        # Randomly spawn from candidates to keep it interesting
+        if spawn_candidates:
+            sx, sy = random.choice(spawn_candidates)
+            pos = (sx * self.cell_size + self.cell_size // 2, 
+                   sy * self.cell_size + self.cell_size // 2)
+            new_enemies.append(Enemy(pos, "zombie"))
+            
+        return new_enemies
+
+    def get_state_at(self, x, y):
+        gx, gy = int(x // self.cell_size), int(y // self.cell_size)
+        if 0 <= gx < self.cols and 0 <= gy < self.rows:
+            # Re-calculate state for real-time movement feedback
+            neighbors = 0
+            binary_grid = [[1 if self.grid[ny][nx] > 0 else 0 for nx in range(self.cols)] for ny in range(self.rows)]
+            for dy in [-1, 0, 1]:
+                for dx in [-1, 0, 1]:
+                    if dx == 0 and dy == 0: continue
+                    nx, ny = gx + dx, gy + dy
+                    if 0 <= nx < self.cols and 0 <= ny < self.rows:
+                        neighbors += binary_grid[ny][nx]
+            
+            if binary_grid[gy][gx] == 1:
+                if neighbors < 2: return "underpopulated"
+                if neighbors > 3: return "overpopulated"
+                return "stable"
+        return "underpopulated"
+
 # ── Enemy ──────────────────────────────────────────────────────────────────────
 ENEMY_STATS = {
     "zombie": {"hp": 12,  "speed": (1.5, 3.0), "shoot_cd": 999, "dmg": 1, "score": 100, "size": (85,  85)},
@@ -537,8 +629,12 @@ class Enemy(pygame.sprite.Sprite):
         # Wandering for ranged
         self.wander_timer = 0.0
         self.wander_dir   = pygame.math.Vector2(random.uniform(-1,1), random.uniform(-1,1)).normalize()
+        
+        # Swarm GoL State
+        self.gol_state = "stable"
+        self.state_timer = 0.0
 
-    def update(self, dt, player_pos, room, particles):
+    def update(self, dt, player_pos, room, particles, swarm_ctrl=None):
         if self.stunned > 0:
             self.stunned = max(0, self.stunned - dt)
             return None
@@ -552,24 +648,55 @@ class Enemy(pygame.sprite.Sprite):
             return None
 
         self.hurt_flash = max(0, self.hurt_flash - dt)
+        
+        # Intelligence based on GoL state
+        current_speed = self.speed
+        aggression_mul = 1.0
+        
+        if swarm_ctrl:
+            self.gol_state = swarm_ctrl.get_state_at(self.pos.x, self.pos.y)
+            
+        if self.gol_state == "underpopulated":
+            # Alone and afraid: move slower, no shooting
+            current_speed *= 0.6
+            aggression_mul = 0.0
+        elif self.gol_state == "overpopulated":
+            # Too many enemies: take damage, move erratically
+            self.health -= 0.5 * dt
+            current_speed *= 1.4
+            aggression_mul = 0.5
+            if random.random() < 0.1:
+                self.wander_dir = pygame.math.Vector2(random.uniform(-1,1), random.uniform(-1,1)).normalize()
+        else: # stable
+            # Empowered by the swarm: move faster, shoot faster
+            current_speed *= 1.2
+            aggression_mul = 1.5
 
         dist = (player_pos - self.pos).length()
 
-        # Movement
-        if self.e_type == "ranged" and dist < 200:
-            # strafe away
-            self.wander_timer -= dt
-            if self.wander_timer <= 0:
-                self.wander_timer = random.uniform(0.5, 1.5)
-                perp = pygame.math.Vector2(-(player_pos - self.pos).y, (player_pos - self.pos).x)
-                if perp.length() > 0:
-                    self.wander_dir = perp.normalize()
-            move_vec = self.wander_dir
-        else:
+        # Movement logic
+        if self.gol_state == "underpopulated":
+            # Try to find others: move towards player (usually center of action)
             dir_vec = player_pos - self.pos
             move_vec = dir_vec.normalize() if dir_vec.length() > 0 else pygame.math.Vector2(0,0)
+        elif self.gol_state == "overpopulated":
+            # Move away from player and others (chaotic)
+            move_vec = self.wander_dir
+        else:
+            # Stable movement
+            if self.e_type == "ranged" and dist < 200:
+                self.wander_timer -= dt
+                if self.wander_timer <= 0:
+                    self.wander_timer = random.uniform(0.5, 1.5)
+                    perp = pygame.math.Vector2(-(player_pos - self.pos).y, (player_pos - self.pos).x)
+                    if perp.length() > 0:
+                        self.wander_dir = perp.normalize()
+                move_vec = self.wander_dir
+            else:
+                dir_vec = player_pos - self.pos
+                move_vec = dir_vec.normalize() if dir_vec.length() > 0 else pygame.math.Vector2(0,0)
 
-        new_pos  = self.pos + move_vec * self.speed
+        new_pos  = self.pos + move_vec * current_speed
         t_type   = room.get_type(new_pos.x, new_pos.y)
         if t_type == "HOLE":
             self.falling = True
@@ -581,27 +708,41 @@ class Enemy(pygame.sprite.Sprite):
         angle = -math.degrees(math.atan2(
             player_pos.y - self.pos.y, player_pos.x - self.pos.x))
         base = assets.get_image(self.e_type, self.size)
+        
+        # Visual feedback for GoL state
+        tint_color = None
+        if self.gol_state == "underpopulated":
+            tint_color = (100, 100, 100, 100) # Grayish/dim
+        elif self.gol_state == "overpopulated":
+            tint_color = (255, 100, 0, 100) # Orange/overheated
+        
         if self.hurt_flash > 0:
             tint = base.copy()
             red  = pygame.Surface(self.size, pygame.SRCALPHA)
             red.fill((255, 0, 0, int(180 * self.hurt_flash)))
             tint.blit(red, (0,0), special_flags=pygame.BLEND_RGBA_ADD)
             self.image = pygame.transform.rotate(tint, angle)
+        elif tint_color:
+            tint = base.copy()
+            ov = pygame.Surface(self.size, pygame.SRCALPHA)
+            ov.fill(tint_color)
+            tint.blit(ov, (0,0), special_flags=pygame.BLEND_RGBA_MULT)
+            self.image = pygame.transform.rotate(tint, angle)
         else:
             self.image = pygame.transform.rotate(base, angle)
 
         # Shooting
         bullet = None
-        if self.e_type in ("ranged", "boss"):
-            self.shoot_timer -= dt
+        if self.e_type in ("ranged", "boss") and aggression_mul > 0:
+            self.shoot_timer -= dt * aggression_mul
             if self.shoot_timer <= 0:
                 self.shoot_timer = self.shoot_cd + random.uniform(-0.1, 0.3)
                 if self.e_type == "boss":
-                    # triple shot
                     return [Bullet(self.pos, angle + offset, is_enemy=True, damage=self.dmg)
                             for offset in (-12, 0, 12)]
                 bullet = Bullet(self.pos, angle, is_enemy=True, damage=self.dmg)
         return bullet
+
 
     def take_hit(self, damage, particles):
         self.health    -= damage
@@ -750,6 +891,7 @@ def main():
     lighting       = LightingSystem()
     particles      = ParticleManager()
     player         = Player()
+    swarm_ctrl     = SwarmController(SCREEN_WIDTH, SCREEN_HEIGHT, 100)
 
     bullets       = pygame.sprite.Group()
     enemy_bullets = pygame.sprite.Group()
@@ -839,6 +981,12 @@ def main():
             if wall_obj:
                 walls.add(wall_obj)
 
+            # Update swarm intelligence
+            new_spawns = swarm_ctrl.update(dt, enemies, room_x, room_y)
+            for ns in new_spawns:
+                enemies.add(ns)
+                particles.emit_burst(ns.pos, NEON_CYAN, WHITE, count=15)
+
             if shockwave_active:
                 shockwaves.append(Shockwave(player.pos))
                 screenshake(0.3, 8)
@@ -911,7 +1059,7 @@ def main():
 
             # Enemy updates
             for e in list(enemies):
-                result = e.update(dt, player.pos, current_room, particles)
+                result = e.update(dt, player.pos, current_room, particles, swarm_ctrl)
                 if isinstance(result, list):
                     for nb in result:
                         enemy_bullets.add(nb)
